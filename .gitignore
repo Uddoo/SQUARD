@@ -19,6 +19,8 @@ build*/*
 *.dll
 *.a
 *.la
+/.ccache/
+
 
 # Legacy SCons files
 config.log
