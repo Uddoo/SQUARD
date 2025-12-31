@@ -35,6 +35,8 @@
 
 void LoadWindowPosition()
 {
+	// 读取并恢复上次窗口位置。
+	// 首次运行时不恢复，避免把窗口放到不可见区域。
 	if (Client::Ref().IsFirstRun())
 	{
 		return;
@@ -56,6 +58,7 @@ void LoadWindowPosition()
 	bool ok = false;
 	for (int i = 0; i < numDisplays; i++)
 	{
+		// 确保保存的坐标仍然落在某个显示器的可用范围内。
 		SDL_GetDisplayBounds(i, &displayBounds);
 		if (savedWindowX + borderTop > displayBounds.x && savedWindowY + borderLeft > displayBounds.y &&
 				savedWindowX + borderTop < displayBounds.x + displayBounds.w &&
@@ -71,6 +74,8 @@ void LoadWindowPosition()
 
 void SaveWindowPosition()
 {
+	// 保存窗口位置到偏好设置中。
+	// 注意：这里会扣除边框尺寸，以便跨平台更稳定地还原。
 	int x, y;
 	SDL_GetWindowPosition(sdl_window, &x, &y);
 
@@ -84,6 +89,7 @@ void SaveWindowPosition()
 
 void LargeScreenDialog()
 {
+	// 首次运行且检测到屏幕足够大时，自动提高窗口缩放比例，并提供撤销选项。
 	StringBuilder message;
 	auto scale = ui::Engine::Ref().windowFrameOps.scale;
 	message << "Switching to " << scale << "x size mode since your screen was determined to be large enough: ";
@@ -97,11 +103,14 @@ void LargeScreenDialog()
 
 void TickClient()
 {
+	// 在线功能/网络请求等的周期性更新。
 	Client::Ref().Tick();
 }
 
 static void BlueScreen(String detailMessage, std::optional<std::vector<String>> stackTrace)
 {
+	// 崩溃/致命错误处理：渲染“蓝屏”并尽可能写入 crash.log，方便用户上报。
+	// 这里会进入事件循环等待关闭窗口，属于“不可恢复”的末路状态。
 	auto &engine = ui::Engine::Ref();
 	engine.g->BlendFilledRect(engine.g->Size().OriginRect(), 0x1172A9_rgb .WithAlpha(0xD2));
 
@@ -119,6 +128,7 @@ static void BlueScreen(String detailMessage, std::optional<std::vector<String>> 
 	crashInfo << "Date: " << format::UnixtimeToDate(time(nullptr), "%Y-%m-%dT%H:%M:%SZ", false).FromUtf8() << "\n";
 	if (stackTrace)
 	{
+		// stackTrace 来源于 Platform::StackTrace()；不同平台上可能不可用。
 		crashInfo << "Stack trace; Main is at 0x" << Format::Hex() << intptr_t(Main) << ":\n";
 		for (auto &item : *stackTrace)
 		{
@@ -140,6 +150,7 @@ static void BlueScreen(String detailMessage, std::optional<std::vector<String>> 
 	Platform::WriteFile(crashLogData, crashLogPath);
 
 	//Death loop
+	// 仅响应 SDL_QUIT，避免再次触发复杂逻辑。
 	SDL_Event event;
 	auto running = true;
 	while (running)
@@ -177,6 +188,7 @@ static struct
 
 static void SigHandler(int signal)
 {
+	// POSIX 信号处理：把常见崩溃信号映射为文本并进入蓝屏。
 	const char *message = "Unknown signal";
 	for (auto *msg = signalMessages; msg->message; ++msg)
 	{
@@ -191,6 +203,8 @@ static void SigHandler(int signal)
 
 static void TerminateHandler()
 {
+	// C++ 异常未捕获（std::terminate）时的兜底处理。
+	// 尽可能提取异常信息，写入 crash.log 并显示蓝屏。
 	ByteString err = "std::terminate called without a current exception";
 	auto eptr = std::current_exception();
 	try
@@ -216,6 +230,8 @@ constexpr int SCALE_MARGIN = 30;
 
 int GuessBestScale()
 {
+	// 根据桌面可用尺寸，估算一个“刚好放得下”的窗口缩放倍数。
+	// 注意：这里使用 WINDOWW/WINDOWH（逻辑分辨率），并留出 SCALE_MARGIN。
 	const int widthNoMargin = desktopWidth - SCALE_MARGIN;
 	const int widthGuess = widthNoMargin / WINDOWW;
 
@@ -231,7 +247,10 @@ int GuessBestScale()
 
 struct ExplicitSingletons
 {
-	// These need to be listed in the order they are populated in main.
+	// 这些对象以“显式单例容器”的方式持有：
+	// - 控制创建/销毁顺序（避免静态初始化顺序问题）
+	// - 便于在 atexit 里统一清理
+	// 注意：成员顺序需要与 main 里初始化顺序保持一致。
 	std::unique_ptr<GlobalPrefs> globalPrefs;
 	http::RequestManagerPtr requestManager;
 	std::unique_ptr<Client> client;
@@ -245,13 +264,16 @@ static std::unique_ptr<ExplicitSingletons> explicitSingletons;
 
 int main(int argc, char *argv[])
 {
+	// 平台相关的 CRT/入口初始化，然后交给 Platform::InvokeMain 做统一封装。
 	Platform::SetupCrt();
 	return Platform::InvokeMain(argc, argv);
 }
 
 int Main(int argc, char *argv[])
 {
+	// 主逻辑入口：完成初始化、创建窗口、进入 UI/模拟主循环。
 	Platform::Atexit([]() {
+		// 退出时尽量做“有序清理”：保存窗口位置、注销信号处理器、关闭 SDL、销毁全局对象。
 		SaveWindowPosition();
 		// Unregister dodgy error handlers so they don't try to show the blue screen when the window is closed
 		for (auto *msg = signalMessages; msg->message; ++msg)
@@ -264,6 +286,7 @@ int Main(int argc, char *argv[])
 	explicitSingletons = std::make_unique<ExplicitSingletons>();
 
 
+	// SDL 全局初始化（视频子系统稍后在 SDLOpen() 里初始化）。
 	// https://bugzilla.libsdl.org/show_bug.cgi?id=3796
 	if (SDL_Init(0) < 0)
 	{
@@ -278,6 +301,11 @@ int Main(int argc, char *argv[])
 
 	for (auto i = 1; i < argc; ++i)
 	{
+		// 命令行参数解析：支持
+		// - file://... 形式（文件关联）
+		// - ptsave:... 形式（线上存档链接）
+		// - key:value / key=value
+		// - open/ptsave/ddir 后跟一个值
 		auto str = ByteString(argv[i]);
 		if (str.BeginsWith("file://"))
 		{
@@ -316,6 +344,7 @@ int Main(int argc, char *argv[])
 	auto ddirArg = arguments["ddir"];
 	if (ddirArg.has_value())
 	{
+		// ddir：显式指定数据目录（偏好、截图、崩溃日志等）。
 		if (Platform::ChangeDir(ddirArg.value()))
 			Platform::sharedCwd = Platform::GetCwd();
 		else
@@ -323,6 +352,7 @@ int Main(int argc, char *argv[])
 	}
 	else if constexpr (SHARED_DATA_FOLDER)
 	{
+		// 部分平台使用“共享数据目录”策略：若当前目录没有 powder.pref，则切到默认 ddir。
 		auto ddir = Platform::DefaultDdir();
 		if (!Platform::FileExists("powder.pref"))
 		{
@@ -341,7 +371,7 @@ int Main(int argc, char *argv[])
 			Platform::sharedCwd = ddir;
 		}
 	}
-	// We're now in the correct directory, time to get prefs.
+	// 现在目录已确定，可以安全读取/写入偏好设置。
 	explicitSingletons->globalPrefs = std::make_unique<GlobalPrefs>();
 
 	auto &prefs = GlobalPrefs::Ref();
@@ -375,6 +405,7 @@ int Main(int argc, char *argv[])
 	auto kioskArg = arguments["kiosk"];
 	if (kioskArg.has_value())
 	{
+		// kiosk：通常用于全屏展示。
 		windowFrameOps.fullscreen = trueString(kioskArg.value());
 		prefs.Set("Fullscreen", windowFrameOps.fullscreen);
 	}
@@ -382,10 +413,12 @@ int Main(int argc, char *argv[])
 	auto redirectStd = prefs.Get("RedirectStd", false);
 	if (trueArg(arguments["console"]))
 	{
+		// Windows 等平台可能需要显式分配控制台窗口。
 		Platform::AllocConsole();
 	}
 	else if (trueArg(arguments["redirect"]) || redirectStd)
 	{
+		// redirect：把 stdout/stderr 重定向到日志文件，便于排查问题。
 		FILE *new_stdout = freopen("stdout.log", "w", stdout);
 		FILE *new_stderr = freopen("stderr.log", "w", stderr);
 		if (!new_stdout || !new_stderr)
@@ -409,6 +442,8 @@ int Main(int argc, char *argv[])
 	}
 
 	auto clientConfig = [&prefs](Argument arg, ByteString name) {
+		// 将命令行参数（可选）写回 prefs，并返回最终生效的值。
+		// 约定：提供了 key 但值为空时，视为清空该配置。
 		if (!arg)
 		{
 			return prefs.Get<ByteString>(name);
@@ -424,9 +459,11 @@ int Main(int argc, char *argv[])
 	auto cafileString = clientConfig(arguments["cafile"], "CAFile");
 	auto capathString = clientConfig(arguments["capath"], "CAPath");
 	bool disableNetwork = trueArg(arguments["disable-network"]);
+	// RequestManager：HTTP 层的统一入口（代理/证书/是否禁网等）。
 	explicitSingletons->requestManager = http::RequestManager::Create({ proxyString, cafileString, capathString, disableNetwork });
 
 	explicitSingletons->client = std::make_unique<Client>();
+	// Client：在线功能/账户/保存/更新等。
 	Client::Ref().SetAutoStartupRequest(prefs.Get("AutoStartupRequest", true));
 	Client::Ref().Initialize();
 	Client::Ref().SetRedirectStd(redirectStd);
@@ -440,6 +477,7 @@ int Main(int argc, char *argv[])
 		windowFrameOps.scale = 1;
 
 	auto &engine = ui::Engine::Ref();
+	// ui::Engine：UI 驱动器，持有当前 Window（state_），并在主循环里 Tick/SimTick/Draw。
 	engine.g = new Graphics();
 	engine.GraveExitsConsole = graveExitsConsole;
 	engine.MomentumScroll = momentumScroll;
@@ -451,6 +489,7 @@ int Main(int argc, char *argv[])
 	engine.windowFrameOps = windowFrameOps;
 
 	SDLOpen();
+	// SDLOpen()：初始化 SDL 视频子系统并创建窗口/renderer/texture。
 
 	if (Client::Ref().IsFirstRun() && FORCE_WINDOW_FRAME_OPS == forceWindowFrameOpsNone)
 	{
@@ -466,6 +505,8 @@ int Main(int argc, char *argv[])
 	bool enableBluescreen = USE_BLUESCREEN && !trueArg(arguments["disable-bluescreen"]);
 	if (enableBluescreen)
 	{
+		// 崩溃处理钩子：注册信号处理器与 std::terminate handler。
+		// 关闭窗口时会在 atexit 里撤销，避免退出过程中再次触发蓝屏。
 		//Get ready to catch any dodgy errors
 		for (auto *msg = signalMessages; msg->message; ++msg)
 		{
@@ -476,18 +517,22 @@ int Main(int argc, char *argv[])
 
 	if constexpr (X86_KILL_DENORMALS)
 	{
+		// x86 下可选：禁用 denormals，避免某些浮点路径出现极端性能问题。
 		X86KillDenormals();
 	}
 
 	explicitSingletons->simulationData = std::make_unique<SimulationData>();
+	// SimulationData：元素/工具等全局静态数据（多处共享）。
 	explicitSingletons->gameController = std::make_unique<GameController>();
 	auto *gameController = explicitSingletons->gameController.get();
+	// 显示游戏主窗口（GameView），之后由 MainLoop/EngineProcess 驱动 Tick/SimTick/Draw。
 	engine.ShowWindow(gameController->GetView());
 	gameController->InitCommandInterface();
 
 	auto openArg = arguments["open"];
 	if (openArg.has_value())
 	{
+		// open：加载本地存档（作为 SaveFile/GameSave）。
 		if constexpr (DEBUG)
 		{
 			std::cout << "Loading " << openArg.value() << std::endl;
@@ -524,6 +569,7 @@ int Main(int argc, char *argv[])
 	auto ptsaveArg = arguments["ptsave"];
 	if (ptsaveArg.has_value())
 	{
+		// ptsave：打开线上存档预览。
 		engine.g->Clear();
 		engine.g->DrawRect(RectSized(engine.g->Size() / 2 - Vec2(100, 25), Vec2(200, 50)), 0xB4B4B4_rgb);
 		String loadingText = "Loading save...";
@@ -570,6 +616,7 @@ int Main(int argc, char *argv[])
 	}
 
 	MainLoop();
+	// 正常情况下 MainLoop 返回意味着 UI 退出。
 
 	Platform::Exit(0);
 	return 0;

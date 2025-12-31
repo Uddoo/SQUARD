@@ -1,5 +1,7 @@
 # Powder Toy 开发环境设置指南
 
+更多项目文档索引见：`docs/README.md`。
+
 ## 前置要求
 
 ### 1. 安装 direnv

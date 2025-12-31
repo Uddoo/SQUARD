@@ -17,6 +17,12 @@ Build instructions
 
 See the _Powder Toy Development Help_ section [on the main page of the wiki](https://powdertoy.co.uk/Wiki/W/Main_Page.html).
 
+Local documentation
+===========================================================================
+
+Project documentation lives in [docs/](docs/).
+New/updated documentation should be added under [docs/](docs/) going forward.
+
 Special Thanks
 ===========================================================================
 
